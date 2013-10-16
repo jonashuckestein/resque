@@ -184,6 +184,8 @@ module Resque
             job.fail(DirtyExit.new($?.to_s)) if $?.signaled?
           else
             unregister_signal_handlers if will_fork? && term_child
+
+
             begin
 
               reconnect
@@ -367,13 +369,25 @@ module Resque
     # USR2: Don't process any new jobs
     # CONT: Start processing jobs again after a USR2
     def register_signal_handlers
-      trap('TERM') { shutdown!  }
-      trap('INT')  { shutdown!  }
+      trap('TERM') { 
+        log! "#{Process.pid} trapped TERM in register"
+        shutdown!  
+      }
+      trap('INT')  {
+        log! "#{Process.pid} trapped INT in register"
+        shutdown!  
+      }
 
       begin
-        trap('QUIT') { shutdown   }
+        trap('QUIT') { 
+          log! "#{Process.pid} trapped QUIT in register"
+          shutdown   
+        }
         if term_child
-          trap('USR1') { new_kill_child }
+          trap('USR1') {
+            log! "#{Process.pid} trapped USR1 in register"
+            new_kill_child 
+          }
         else
           trap('USR1') { kill_child }
         end
@@ -388,15 +402,30 @@ module Resque
 
     def unregister_signal_handlers
       trap('TERM') do
+        log! "#{Process.pid} trapped TERM in unregister"
         trap ('TERM') do 
+          log! "#{Process.pid} trapped subsequent TERM in unregister"
           # ignore subsequent terms               
         end  
-        raise TermException.new("SIGTERM") 
+
+        #raise TermException.new('SIGTERM')
+
       end 
-      trap('INT', 'DEFAULT')
+      trap('KILL') do
+
+        log! "#{Process.pid} trapped KILL in unregister"
+        raise "Boom"
+      end
+      trap('INT') do 
+        log! "#{Process.pid} trapped INT in unregister"
+      end
+      trap('QUIT') do
+        log! "#{Process.pid} trapped QUIT in unregister"
+        raise TermException.new('QUIT')
+
+      end
 
       begin
-        trap('QUIT', 'DEFAULT')
         trap('USR1', 'DEFAULT')
         trap('USR2', 'DEFAULT')
       rescue ArgumentError
@@ -454,7 +483,7 @@ module Resque
           end
           # reach this if process is not dead within pre_term_timeout secs
           log! "Sending TERM signal to child #{@child}"
-          Process.kill("TERM", @child)
+          Process.kill("QUIT", @child)
           (term_timeout.to_f * 10).round.times do |i|
             sleep(0.1)
             return if Process.waitpid(@child, Process::WNOHANG)
