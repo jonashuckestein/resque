@@ -50,10 +50,20 @@ module Resque
     attr_accessor :cant_fork
 
     attr_accessor :term_timeout
-    attr_accessor :pre_term_timeout
+
 
     # decide whether to use new_kill_child logic
     attr_accessor :term_child
+
+    # if term_child is true, waits pre_term_timeout secs before sending
+    # term_child_signal to child. if term_child_signal is not TERM, TERM will
+    # be ignored in child. 
+    #
+    # This is useful for deploying to heroku, where foreman TERMS all children.
+    # If you want pre_term_timeout on heroku, you'll need to set
+    # term_child_signal to something other than TERM (i.e. QUIT)
+    attr_accessor :pre_term_timeout
+    attr_accessor :term_child_signal
 
     # When set to true, forked workers will exit with `exit`, calling any `at_exit` code handlers that have been
     # registered in the application. Otherwise, forked workers exit with `exit!`
@@ -401,31 +411,22 @@ module Resque
     end
 
     def unregister_signal_handlers
-      trap('TERM') do
-        log! "#{Process.pid} trapped TERM in unregister"
-        trap ('TERM') do 
-          log! "#{Process.pid} trapped subsequent TERM in unregister"
-          # ignore subsequent terms               
-        end  
 
-        #raise TermException.new('SIGTERM')
-
-      end 
-      trap('KILL') do
-
-        log! "#{Process.pid} trapped KILL in unregister"
-        raise "Boom"
-      end
-      trap('INT') do 
-        log! "#{Process.pid} trapped INT in unregister"
-      end
-      trap('QUIT') do
-        log! "#{Process.pid} trapped QUIT in unregister"
-        raise TermException.new('QUIT')
-
+      # - raise an exception in the child on term_child_signal
+      # - ignore all signals TERM, QUIT, INT, that are not term_child_signal
+      trap(term_child_signal) do
+        log! "Trapped #{term_child_signal} in child #{Process.pid}; raising"
+        raise TermException.new("SIG#{term_child_signal}")
       end
 
       begin
+        %w{TERM INT QUIT}.each do |signal|
+          if term_child_signal != signal
+            trap(signal) do
+              log! "Trapped #{signal} in child #{Process.pid}; ignoring"
+            end
+          end
+        end
         trap('USR1', 'DEFAULT')
         trap('USR2', 'DEFAULT')
       rescue ArgumentError
@@ -475,15 +476,15 @@ module Resque
       if @child
         unless Process.waitpid(@child, Process::WNOHANG)
           if pre_term_timeout.to_f > 0
-            log! "Wait #{pre_term_timeout.to_f}s before SIGTERM to child #{@child}"
+            log! "Wait #{pre_term_timeout.to_f}s before SIG#{term_child_signal} to child #{@child}"
             (pre_term_timeout.to_f * 10).round.times do |i|
               sleep(0.1)
               return if Process.waitpid(@child, Process::WNOHANG)
             end
           end
           # reach this if process is not dead within pre_term_timeout secs
-          log! "Sending TERM signal to child #{@child}"
-          Process.kill("QUIT", @child)
+          log! "Sending #{term_child_signal} signal to child #{@child}"
+          Process.kill(term_child_signal, @child)
           (term_timeout.to_f * 10).round.times do |i|
             sleep(0.1)
             return if Process.waitpid(@child, Process::WNOHANG)
